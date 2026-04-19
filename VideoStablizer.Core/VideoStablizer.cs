@@ -17,6 +17,8 @@ public class VideoStabilizer
     private readonly double _maxShift;
     private readonly double _maxAngle;
     private readonly int _optZoom;
+    private readonly InterpolationFlags _interpolation;
+    private readonly BorderTypes _borderType;
 
     public VideoStabilizer(VideoStabilizerOptions options)
     {
@@ -29,6 +31,16 @@ public class VideoStabilizer
         _maxShift = options.Transform.MaxShift;
         _maxAngle = options.Transform.MaxAngle;
         _optZoom = options.Transform.OptZoom;
+
+        if (!Enum.TryParse<InterpolationFlags>(options.Transform.Interpolation, true, out _interpolation))
+            throw new ArgumentException(
+                $"Invalid Transform.Interpolation '{options.Transform.Interpolation}'. " +
+                "Expected one of: Nearest, Linear, Cubic, Area, Lanczos4.");
+
+        if (!Enum.TryParse<BorderTypes>(options.Transform.BorderType, true, out _borderType))
+            throw new ArgumentException(
+                $"Invalid Transform.BorderType '{options.Transform.BorderType}'. " +
+                "Expected one of: Reflect, Constant, Replicate, Wrap, Reflect101.");
     }
 
     /// <summary>
@@ -383,7 +395,7 @@ public class VideoStabilizer
 
             using var stabilizedFull = new Mat();
             Cv2.WarpAffine(frame, stabilizedFull, transformMatrix, frameSize,
-                InterpolationFlags.Linear, BorderTypes.Reflect);
+                _interpolation, _borderType);
 
             // Crop per-frame (size driven by OptZoom mode) then resize back to original dimensions
             double cr = cropRatios[frameIdx];
@@ -395,7 +407,7 @@ public class VideoStabilizer
 
             using var cropped = new Mat(stabilizedFull, cropRect);
             using var output = new Mat();
-            Cv2.Resize(cropped, output, frameSize, 0, 0, InterpolationFlags.Linear);
+            Cv2.Resize(cropped, output, frameSize, 0, 0, _interpolation);
 
             writer.Write(output);
             frameIdx++;
