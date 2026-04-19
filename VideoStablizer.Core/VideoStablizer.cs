@@ -70,8 +70,28 @@ public class VideoStabilizer
         double[] cropRatios = ComputeCropRatios(smoothedTransforms, frameSize);
 
         // ── Pass 2: Apply smoothed transforms and write output ───────────
+        // OpenCvSharp's VideoWriter only produces 8-bit yuv420p with no color tags,
+        // so we write to an intermediate file and then re-encode it to match the
+        // input's pix_fmt and color profile.
         Console.WriteLine("[Pass 2] Applying stabilization...");
-        ApplyStabilization(inputPath, outputPath, smoothedTransforms, cropRatios, frameSize, fps);
+        var intermediatePath = Path.Combine(
+            Path.GetDirectoryName(outputPath) ?? ".",
+            Path.GetFileNameWithoutExtension(outputPath) + ".stab-intermediate.mp4");
+
+        try
+        {
+            ApplyStabilization(inputPath, intermediatePath, smoothedTransforms, cropRatios, frameSize, fps);
+
+            Console.WriteLine("[Pass 3] Transcoding to match input stream configuration...");
+            FfmpegTranscoder.TranscodeToMatchReference(intermediatePath, inputPath, outputPath);
+        }
+        finally
+        {
+            if (System.IO.File.Exists(intermediatePath))
+            {
+                try { System.IO.File.Delete(intermediatePath); } catch { /* best effort */ }
+            }
+        }
 
         Console.WriteLine($"[Done] Stabilized video saved to: {outputPath}");
     }
