@@ -1,8 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
+# 
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VideoStablizer", "VideoStablizer\VideoStablizer.csproj", "{AA405F2B-9755-4087-B4D2-39B82607DA9B}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VideoStablizer.Core", "VideoStablizer.Core\VideoStablizer.Core.csproj", "{04C552BC-1799-4EAA-B009-2171A607F4C1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VideoStablizer.Tests", "VideoStablizer.Tests\VideoStablizer.Tests.csproj", "{05E8AE62-DB50-49E9-81C9-FE818DD74595}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -18,5 +21,9 @@ Global
 		{04C552BC-1799-4EAA-B009-2171A607F4C1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{04C552BC-1799-4EAA-B009-2171A607F4C1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{04C552BC-1799-4EAA-B009-2171A607F4C1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{05E8AE62-DB50-49E9-81C9-FE818DD74595}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{05E8AE62-DB50-49E9-81C9-FE818DD74595}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{05E8AE62-DB50-49E9-81C9-FE818DD74595}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{05E8AE62-DB50-49E9-81C9-FE818DD74595}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

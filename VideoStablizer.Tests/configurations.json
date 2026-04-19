@@ -1,0 +1,29 @@
+{
+  "configurations": [
+    {
+      "name": "Default",
+      "detect": { "maxFeatures": 200, "qualityLevel": 0.01, "minDistance": 30.0 },
+      "transform": { "smoothingRadius": 30, "cropRatio": 0.05, "maxShift": -1, "maxAngle": -1, "optZoom": 1 }
+    },
+    {
+      "name": "HighSmoothing",
+      "detect": { "maxFeatures": 200, "qualityLevel": 0.01, "minDistance": 30.0 },
+      "transform": { "smoothingRadius": 60, "cropRatio": 0.05, "maxShift": -1, "maxAngle": -1, "optZoom": 1 }
+    },
+    {
+      "name": "DynamicZoom",
+      "detect": { "maxFeatures": 300, "qualityLevel": 0.01, "minDistance": 20.0 },
+      "transform": { "smoothingRadius": 30, "cropRatio": 0.00, "maxShift": -1, "maxAngle": -1, "optZoom": 2 }
+    },
+    {
+      "name": "ClampedMotion",
+      "detect": { "maxFeatures": 200, "qualityLevel": 0.01, "minDistance": 30.0 },
+      "transform": { "smoothingRadius": 30, "cropRatio": 0.05, "maxShift": 40, "maxAngle": 0.05, "optZoom": 1 }
+    },
+    {
+      "name": "StaticCropOnly",
+      "detect": { "maxFeatures": 200, "qualityLevel": 0.01, "minDistance": 30.0 },
+      "transform": { "smoothingRadius": 30, "cropRatio": 0.15, "maxShift": -1, "maxAngle": -1, "optZoom": 0 }
+    }
+  ]
+}
