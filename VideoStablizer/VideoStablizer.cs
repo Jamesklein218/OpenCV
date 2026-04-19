@@ -14,14 +14,21 @@ public class VideoStabilizer
     private readonly int _maxFeatures;
     private readonly double _qualityLevel;
     private readonly double _minDistance;
+    private readonly double _maxShift;
+    private readonly double _maxAngle;
+    private readonly int _optZoom;
 
     public VideoStabilizer(VideoStabilizerOptions options)
     {
-        _smoothingRadius = options.SmoothingRadius;
-        _cropRatio = Math.Clamp(options.CropRatio, 0.0, 0.3);
-        _maxFeatures = options.MaxFeatures;
-        _qualityLevel = options.QualityLevel;
-        _minDistance = options.MinDistance;
+        _maxFeatures = options.Detect.MaxFeatures;
+        _qualityLevel = options.Detect.QualityLevel;
+        _minDistance = options.Detect.MinDistance;
+
+        _smoothingRadius = options.Transform.SmoothingRadius;
+        _cropRatio = Math.Clamp(options.Transform.CropRatio, 0.0, 0.3);
+        _maxShift = options.Transform.MaxShift;
+        _maxAngle = options.Transform.MaxAngle;
+        _optZoom = options.Transform.OptZoom;
     }
 
     /// <summary>
@@ -47,9 +54,24 @@ public class VideoStabilizer
         var smoothedTrajectory = SmoothTrajectory(trajectory, _smoothingRadius);
         var smoothedTransforms = RecomputeTransforms(transforms, trajectory, smoothedTrajectory);
 
+        // Gap 3: Clamp per-frame correction to MaxShift / MaxAngle (vid.stab: maxshift, maxangle)
+        if (_maxShift >= 0 || _maxAngle >= 0)
+        {
+            smoothedTransforms = smoothedTransforms
+                .Select(t => new TransformParam(
+                    _maxShift >= 0 ? Math.Clamp(t.Dx, -_maxShift, _maxShift) : t.Dx,
+                    _maxShift >= 0 ? Math.Clamp(t.Dy, -_maxShift, _maxShift) : t.Dy,
+                    _maxAngle >= 0 ? Math.Clamp(t.Angle, -_maxAngle, _maxAngle) : t.Angle,
+                    t.LogScale))
+                .ToList();
+        }
+
+        // Gap 2: Compute per-frame crop ratios (vid.stab: optzoom)
+        double[] cropRatios = ComputeCropRatios(smoothedTransforms, frameSize);
+
         // ── Pass 2: Apply smoothed transforms and write output ───────────
         Console.WriteLine("[Pass 2] Applying stabilization...");
-        ApplyStabilization(inputPath, outputPath, smoothedTransforms, frameSize, fps);
+        ApplyStabilization(inputPath, outputPath, smoothedTransforms, cropRatios, frameSize, fps);
 
         Console.WriteLine($"[Done] Stabilized video saved to: {outputPath}");
     }
@@ -96,17 +118,14 @@ public class VideoStabilizer
 
             if (prevCorners.Length < 4)
             {
-                // Not enough features — assume identity (no correction)
                 transforms.Add(new TransformParam(0, 0, 0));
                 currGray.CopyTo(prevGray);
                 processedFrames++;
                 continue;
             }
 
-            // Convert to Point2f array for calcOpticalFlowPyrLK
             var prevPts = prevCorners.Select(p => new Point2f((float)p.X, (float)p.Y)).ToArray();
 
-            // Track features into the current frame
             var currPts = new Point2f[prevPts.Length];
             Cv2.CalcOpticalFlowPyrLK(
                 prevGray, currGray, prevPts, ref currPts,
@@ -114,7 +133,6 @@ public class VideoStabilizer
                 new Size(21, 21), 3, null,
                 OpticalFlowFlags.None, 1e-4);
 
-            // Keep only successfully tracked points
             var goodPrev = new List<Point2f>();
             var goodCurr = new List<Point2f>();
             for (int i = 0; i < status.Length; i++)
@@ -147,12 +165,14 @@ public class VideoStabilizer
             }
             else
             {
-                // T is a 2×3 matrix: [[cos θ, -sin θ, tx], [sin θ, cos θ, ty]]
+                // T is a 2×3 similarity matrix: [[s·cosθ, -s·sinθ, tx], [s·sinθ, s·cosθ, ty]]
                 double dx = T.At<double>(0, 2);
                 double dy = T.At<double>(1, 2);
                 double angle = Math.Atan2(T.At<double>(1, 0), T.At<double>(0, 0));
+                double scale = Math.Sqrt(T.At<double>(0, 0) * T.At<double>(0, 0)
+                                       + T.At<double>(1, 0) * T.At<double>(1, 0));
+                double logScale = Math.Log(Math.Max(scale, 1e-6));
 
-                // Sanity check: reject implausibly large transforms
                 if (Math.Abs(dx) > frameSize.Width * 0.25 ||
                     Math.Abs(dy) > frameSize.Height * 0.25 ||
                     Math.Abs(angle) > Math.PI / 6)
@@ -161,7 +181,7 @@ public class VideoStabilizer
                 }
                 else
                 {
-                    transforms.Add(new TransformParam(dx, dy, angle));
+                    transforms.Add(new TransformParam(dx, dy, angle, logScale));
                 }
             }
 
@@ -178,52 +198,56 @@ public class VideoStabilizer
     // ─────────────────────────────────────────────────────────────────────
     //  Trajectory Computation & Smoothing
     // ─────────────────────────────────────────────────────────────────────
+
     private static List<Trajectory> ComputeTrajectory(List<TransformParam> transforms)
     {
         var trajectory = new List<Trajectory>(transforms.Count);
-        double x = 0, y = 0, angle = 0;
+        double x = 0, y = 0, angle = 0, scale = 0;
 
         foreach (var t in transforms)
         {
             x += t.Dx;
             y += t.Dy;
             angle += t.Angle;
-            trajectory.Add(new Trajectory(x, y, angle));
+            scale += t.LogScale;
+            trajectory.Add(new Trajectory(x, y, angle, scale));
         }
 
         return trajectory;
     }
 
-    /// <summary>
-    /// Moving-average smoothing of the cumulative trajectory.
-    /// </summary>
+    // Gap 1: Gaussian-weighted smoothing (vid.stab uses Gaussian by default).
+    // Dividing by weightSum each position handles boundary clamping correctly.
     private static List<Trajectory> SmoothTrajectory(List<Trajectory> trajectory, int radius)
     {
-        var smoothed = new List<Trajectory>(trajectory.Count);
+        double sigma = radius / 2.0;
+        var kernel = new double[2 * radius + 1];
+        for (int k = 0; k < kernel.Length; k++)
+        {
+            double offset = k - radius;
+            kernel[k] = Math.Exp(-(offset * offset) / (2 * sigma * sigma));
+        }
 
+        var smoothed = new List<Trajectory>(trajectory.Count);
         for (int i = 0; i < trajectory.Count; i++)
         {
-            double sumX = 0, sumY = 0, sumAngle = 0;
-            int count = 0;
-
+            double sumX = 0, sumY = 0, sumAngle = 0, sumScale = 0, weightSum = 0;
             for (int j = -radius; j <= radius; j++)
             {
                 int idx = Math.Clamp(i + j, 0, trajectory.Count - 1);
-                sumX += trajectory[idx].X;
-                sumY += trajectory[idx].Y;
-                sumAngle += trajectory[idx].Angle;
-                count++;
+                double w = kernel[j + radius];
+                sumX += trajectory[idx].X * w;
+                sumY += trajectory[idx].Y * w;
+                sumAngle += trajectory[idx].Angle * w;
+                sumScale += trajectory[idx].Scale * w;
+                weightSum += w;
             }
-
-            smoothed.Add(new Trajectory(sumX / count, sumY / count, sumAngle / count));
+            smoothed.Add(new Trajectory(sumX / weightSum, sumY / weightSum, sumAngle / weightSum, sumScale / weightSum));
         }
 
         return smoothed;
     }
 
-    /// <summary>
-    /// Recompute per-frame transforms so the camera follows the smoothed trajectory.
-    /// </summary>
     private static List<TransformParam> RecomputeTransforms(
         List<TransformParam> original,
         List<Trajectory> trajectory,
@@ -236,14 +260,57 @@ public class VideoStabilizer
             double diffX = smoothedTrajectory[i].X - trajectory[i].X;
             double diffY = smoothedTrajectory[i].Y - trajectory[i].Y;
             double diffAngle = smoothedTrajectory[i].Angle - trajectory[i].Angle;
+            double diffLogScale = smoothedTrajectory[i].Scale - trajectory[i].Scale;
 
             result.Add(new TransformParam(
                 original[i].Dx + diffX,
                 original[i].Dy + diffY,
-                original[i].Angle + diffAngle));
+                original[i].Angle + diffAngle,
+                original[i].LogScale + diffLogScale));
         }
 
         return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Gap 2: Optimal zoom (vid.stab: optzoom)
+    // ─────────────────────────────────────────────────────────────────────
+
+    private double[] ComputeCropRatios(List<TransformParam> transforms, Size frameSize)
+    {
+        if (_optZoom == 0)
+            return Enumerable.Repeat(_cropRatio, transforms.Count).ToArray();
+
+        double ar = (double)frameSize.Height / frameSize.Width;
+
+        double[] perFrame = transforms.Select(t =>
+        {
+            // Fraction of width/height lost to pure translation on each side
+            double fromShiftX = Math.Abs(t.Dx) / frameSize.Width;
+            double fromShiftY = Math.Abs(t.Dy) / frameSize.Height;
+
+            // Fraction lost to rotation: the inscribed axis-aligned rect inside the
+            // rotated frame has width W*cos(a) - H*|sin(a)| and height H*cos(a) - W*|sin(a)|.
+            // Crop fraction per side = (1 - cos(a) + (H/W)*|sin(a)|) / 2 for X axis, etc.
+            double cosA = Math.Cos(t.Angle);
+            double sinA = Math.Abs(Math.Sin(t.Angle));
+            double fromAngleX = (1 - cosA + ar * sinA) / 2;
+            double fromAngleY = (1 - cosA + sinA / ar) / 2;
+
+            // Scale < 1 zooms out, leaving black borders on all sides: crop = (1 - s) / 2
+            double fromScale = Math.Max(0.0, (1.0 - t.Scale) / 2.0);
+
+            return Math.Max(Math.Max(fromShiftX, fromShiftY), Math.Max(Math.Max(fromAngleX, fromAngleY), fromScale));
+        }).ToArray();
+
+        if (_optZoom == 1)
+        {
+            double staticCrop = Math.Min(perFrame.Max(), 0.3);
+            return Enumerable.Repeat(staticCrop, transforms.Count).ToArray();
+        }
+
+        // Dynamic (OptZoom=2): per-frame, capped at 30%
+        return perFrame.Select(c => Math.Min(c, 0.3)).ToArray();
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -253,13 +320,9 @@ public class VideoStabilizer
     private void ApplyStabilization(
         string inputPath, string outputPath,
         List<TransformParam> smoothedTransforms,
+        double[] cropRatios,
         Size frameSize, double fps)
     {
-        if (!File.Exists(outputPath))
-        {
-            File.Create(outputPath).Close();
-        }
-        
         if (System.IO.File.Exists(outputPath))
             System.IO.File.Delete(outputPath);
 
@@ -278,13 +341,6 @@ public class VideoStabilizer
         capture.Read(firstFrame);
         writer.Write(firstFrame);
 
-        // Crop rectangle (removes black borders from stabilization shifts)
-        int cropX = (int)(frameSize.Width * _cropRatio);
-        int cropY = (int)(frameSize.Height * _cropRatio);
-        var cropRect = new Rect(cropX, cropY,
-                                frameSize.Width - 2 * cropX,
-                                frameSize.Height - 2 * cropY);
-
         int frameIdx = 0;
 
         while (frameIdx < smoothedTransforms.Count)
@@ -295,9 +351,9 @@ public class VideoStabilizer
 
             var t = smoothedTransforms[frameIdx];
 
-            // Build the 2×3 affine matrix from (dx, dy, angle)
-            double cosA = Math.Cos(t.Angle);
-            double sinA = Math.Sin(t.Angle);
+            double s = t.Scale;
+            double cosA = s * Math.Cos(t.Angle);
+            double sinA = s * Math.Sin(t.Angle);
 
             using var transformMatrix = new Mat(2, 3, MatType.CV_64FC1);
             transformMatrix.Set(0, 0, cosA);
@@ -307,12 +363,18 @@ public class VideoStabilizer
             transformMatrix.Set(1, 1, cosA);
             transformMatrix.Set(1, 2, t.Dy);
 
-            // Warp with border reflection to reduce black edges
             using var stabilizedFull = new Mat();
             Cv2.WarpAffine(frame, stabilizedFull, transformMatrix, frameSize,
                 InterpolationFlags.Linear, BorderTypes.Reflect);
 
-            // Crop to hide residual border artifacts, then resize back to original dimensions
+            // Crop per-frame (size driven by OptZoom mode) then resize back to original dimensions
+            double cr = cropRatios[frameIdx];
+            int cropX = (int)(frameSize.Width * cr);
+            int cropY = (int)(frameSize.Height * cr);
+            var cropRect = new Rect(cropX, cropY,
+                                    frameSize.Width - 2 * cropX,
+                                    frameSize.Height - 2 * cropY);
+
             using var cropped = new Mat(stabilizedFull, cropRect);
             using var output = new Mat();
             Cv2.Resize(cropped, output, frameSize, 0, 0, InterpolationFlags.Linear);
@@ -325,4 +387,3 @@ public class VideoStabilizer
         }
     }
 }
-
