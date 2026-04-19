@@ -216,8 +216,6 @@ public class VideoStabilizer
         return trajectory;
     }
 
-    // Gap 1: Gaussian-weighted smoothing (vid.stab uses Gaussian by default).
-    // Dividing by weightSum each position handles boundary clamping correctly.
     private static List<Trajectory> SmoothTrajectory(List<Trajectory> trajectory, int radius)
     {
         double sigma = radius / 2.0;
